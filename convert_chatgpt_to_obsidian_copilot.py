@@ -1,0 +1,344 @@
+#!/usr/bin/env python3
+"""
+Convert ChatGPT exported conversations to Obsidian Copilot format.
+"""
+
+import json
+import os
+import re
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+def extract_json_from_html(html_file: str) -> Tuple[Optional[List], Optional[Dict]]:
+    """
+    Extract jsonData and assetsJson variables from chat.html file.
+    Returns (conversations_list, assets_dict) or (None, None) if extraction fails.
+    """
+    try:
+        with open(html_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Extract jsonData variable - find the array and parse it carefully
+        json_data = None
+        json_match = re.search(r'var\s+jsonData\s*=\s*(\[)', content)
+        if json_match:
+            start_pos = json_match.start(1)
+            # Find matching closing bracket
+            bracket_count = 0
+            in_string = False # boolean flag that tracks whether the parser is currently inside a JSON string literal.
+            escape_next = False # boolean flag that tracks whether the next character is escaped with a backslash.
+            for i in range(start_pos, len(content)):
+                char = content[i]
+                
+                if escape_next:
+                    escape_next = False
+                    continue
+                
+				# Handle escaped quotes (\") inside strings so they don't incorrectly toggle the in_string flag
+                if char == '\\':
+                    escape_next = True
+                    continue
+                
+				# Prevent counting brackets/braces that appear inside string values of JSON
+                if char == '"' and not escape_next:
+                    in_string = not in_string
+                    continue
+                
+                if not in_string:
+                    if char == '[':
+                        bracket_count += 1
+                    elif char == ']':
+                        bracket_count -= 1
+                        if bracket_count == 0:
+                            json_str = content[start_pos:i+1]
+                            json_data = json.loads(json_str)
+                            break
+        
+        # Extract assetsJson variable
+        assets_data = None
+        assets_match = re.search(r'var\s+assetsJson\s*=\s*(\{)', content)
+        if assets_match:
+            start_pos = assets_match.start(1)
+            # Find matching closing brace
+            brace_count = 0
+            in_string = False
+            escape_next = False
+            for i in range(start_pos, len(content)):
+                char = content[i]
+                
+                if escape_next:
+                    escape_next = False
+                    continue
+                
+                if char == '\\':
+                    escape_next = True
+                    continue
+                
+                if char == '"' and not escape_next:
+                    in_string = not in_string
+                    continue
+                
+                if not in_string:
+                    if char == '{':
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            json_str = content[start_pos:i+1]
+                            assets_data = json.loads(json_str)
+                            break
+        
+        if json_data is None:
+            print(f"✗ Could not find jsonData in {html_file}")
+            return None, None
+        
+        return json_data, assets_data if assets_data else {}
+    
+    except json.JSONDecodeError as e:
+        print(f"✗ JSON parsing error in {html_file}: {e}")
+        return None, None
+    except Exception as e:
+        print(f"✗ Error reading {html_file}: {e}")
+        return None, None
+
+def epoch_to_timestamp(epoch: float) -> str:
+    """Convert Unix epoch to YYYY/MM/DD HH:MM:SS format."""
+    dt = datetime.fromtimestamp(epoch)
+    return dt.strftime('%Y/%m/%d %H:%M:%S')
+
+def epoch_to_filename_date(epoch: float) -> str:
+    """Convert Unix epoch to YYYYMMDD_HHMMSS format for filename."""
+    dt = datetime.fromtimestamp(epoch)
+    return dt.strftime('%Y%m%d_%H%M%S')
+
+def sanitize_filename(text: str, max_words: int = 10) -> str:
+    """
+    Extract first N words and convert to underscore-separated filename.
+    Remove special characters and limit length.
+    """
+    # Remove special characters, keep only alphanumeric and spaces
+    text = re.sub(r'[^\w\s-]', '', text)
+    # Split into words and take first max_words
+    words = text.split()[:max_words]
+    # Join with underscores and remove extra whitespace
+    filename = '_'.join(words)
+    # Remove multiple underscores
+    filename = re.sub(r'_+', '_', filename)
+    return filename.strip('_')
+
+def get_conversation_messages(conversation: Dict) -> List[Dict]:
+    """
+    Extract messages from conversation mapping by traversing from current_node.
+    Returns list of {author, parts, create_time} dicts.
+    """
+    messages = []
+    current_node = conversation.get('current_node')
+    mapping = conversation.get('mapping', {})
+    
+    while current_node:
+        node = mapping.get(current_node)
+        if not node:
+            break
+            
+        message = node.get('message')
+        if message and message.get('content') and message['content'].get('parts'):
+            author_role = message.get('author', {}).get('role')
+            
+            # Skip system messages unless they're user system messages
+            if author_role == 'system':
+                current_node = node.get('parent')
+                continue
+            
+            # Map author roles
+            if author_role == 'assistant' or author_role == 'tool':
+                author = 'ai'
+            elif author_role == 'system':
+                author = 'user'  # Custom user info
+            else:
+                author = 'user'
+            
+            content_type = message['content'].get('content_type')
+            if content_type in ['text', 'multimodal_text']:
+                parts = []
+                for part in message['content']['parts']:
+                    if isinstance(part, str) and part.strip():
+                        parts.append({'text': part})
+                    elif isinstance(part, dict):
+                        if part.get('content_type') == 'audio_transcription':
+                            parts.append({'transcript': part.get('text', '')})
+                        elif part.get('content_type') in ['audio_asset_pointer', 'image_asset_pointer', 
+                                                          'video_container_asset_pointer']:
+                            parts.append({'asset': part})
+                        elif part.get('content_type') == 'real_time_user_audio_video_asset_pointer':
+                            if part.get('audio_asset_pointer'):
+                                parts.append({'asset': part['audio_asset_pointer']})
+                            if part.get('video_container_asset_pointer'):
+                                parts.append({'asset': part['video_container_asset_pointer']})
+                            for frame in part.get('frames_asset_pointers', []):
+                                parts.append({'asset': frame})
+                
+                if parts:
+                    messages.append({
+                        'author': author,
+                        'parts': parts,
+                        'create_time': message.get('create_time')
+                    })
+        
+        current_node = node.get('parent')
+    
+    return list(reversed(messages))
+
+def format_message_parts(parts: List[Dict], assets_map: Dict[str, str], 
+                         image_folder: str = 'Images/copilot-conversations-images') -> str:
+    """
+    Format message parts into markdown text.
+    Handles text, transcripts, and asset pointers (images/audio/video).
+    """
+    output = []
+    
+    for part in parts:
+        if 'text' in part:
+            output.append(part['text'])
+        elif 'transcript' in part:
+            output.append(f"[Transcript]: {part['transcript']}")
+        elif 'asset' in part:
+            asset_pointer = part['asset'].get('asset_pointer', '')
+            if asset_pointer in assets_map:
+                filename = assets_map[asset_pointer]
+                # Use Obsidian image syntax for images
+                if any(filename.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
+                    output.append(f"![[{filename}]]")
+                else:
+                    # For other files, just link them
+                    output.append(f"[File]: [[{filename}]]")
+            else:
+                output.append("[File]: -Deleted-")
+    
+    return '\n'.join(output)
+
+def convert_conversation_to_markdown(conversation: Dict, assets_map: Dict[str, str]) -> tuple[str, str]:
+    """
+    Convert a single conversation to Obsidian Copilot markdown format.
+    Returns (filename, markdown_content).
+    """
+    title = conversation.get('title', 'Untitled')
+    create_time = conversation.get('create_time', 0)
+    messages = get_conversation_messages(conversation)
+    
+    if not messages:
+        return None, None
+    
+    # Get first user message for filename
+    first_user_msg = None
+    for msg in messages:
+        if msg['author'] == 'user':
+            first_user_msg = msg
+            break
+    
+    if not first_user_msg:
+        return None, None
+    
+    # Extract first text part for filename
+    first_text = ''
+    for part in first_user_msg['parts']:
+        if 'text' in part:
+            first_text = part['text']
+            break
+    
+    # Generate filename
+    topic_part = sanitize_filename(first_text, max_words=10)
+    date_part = epoch_to_filename_date(create_time)
+    filename = f"{topic_part}@{date_part}.md"
+    
+    # Build markdown content
+    lines = []
+    
+    # YAML frontmatter
+    lines.append('---')
+    lines.append(f'epoch: {int(create_time * 1000)}')  # Convert to milliseconds
+    lines.append('modelKey: "openai/gpt-oss-120b|openrouterai"')
+    lines.append(f'topic: "{title}"')
+    lines.append('')
+    lines.append('')
+    lines.append('tags:')
+    lines.append('  - copilot-conversation')
+    lines.append('---')
+    lines.append('')
+    
+    # Messages
+    for msg in messages:
+        author = msg['author']
+        content = format_message_parts(msg['parts'], assets_map)
+        timestamp = epoch_to_timestamp(msg['create_time']) if msg.get('create_time') else ''
+        
+        if content.strip():  # Only add non-empty messages
+            lines.append(f"**{author}**: {content}")
+            if timestamp:
+                lines.append(f"[Timestamp: {timestamp}]")
+            lines.append('')
+    
+    return filename, '\n'.join(lines)
+
+def main():
+    """Main conversion function."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Convert ChatGPT exports to Obsidian Copilot format')
+    parser.add_argument('json_file', nargs='?', help='Path to conversations.json file')
+    parser.add_argument('--assets', help='Path to assets.json file (optional)')
+    parser.add_argument('--html', help='Path to chat.html file (extracts jsonData and assetsJson variables)')
+    parser.add_argument('--output-dir', default='./converted', help='Output directory for markdown files')
+    parser.add_argument('--image-folder', default='Images/copilot-conversations-images', 
+                       help='Folder path for images in Obsidian vault')
+    
+    args = parser.parse_args()
+    
+    # Load conversations and assets
+    conversations = None
+    assets_map = {}
+    
+    if args.html:
+        # Extract from HTML file
+        conversations, assets_map = extract_json_from_html(args.html)
+        if conversations is None:
+            return
+    elif args.json_file:
+        # Load from JSON files
+        with open(args.json_file, 'r', encoding='utf-8') as f:
+            conversations = json.load(f)
+        
+        # Load assets mapping if provided
+        if args.assets and os.path.exists(args.assets):
+            with open(args.assets, 'r', encoding='utf-8') as f:
+                assets_map = json.load(f)
+    else:
+        parser.print_help()
+        print("\n✗ Error: Either provide json_file or use --html option")
+        return
+    
+    # Create output directory
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Convert each conversation
+    converted_count = 0
+    for conversation in conversations:
+        filename, markdown = convert_conversation_to_markdown(conversation, assets_map)
+        
+        if filename and markdown:
+            output_path = output_dir / filename
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(markdown)
+            print(f"✓ Converted: {filename}")
+            converted_count += 1
+        else:
+            conv_id = conversation.get('id', 'unknown')
+            print(f"✗ Skipped conversation {conv_id}: No valid messages")
+    
+    print(f"\n✓ Converted {converted_count} conversations to {output_dir}")
+    print(f"\nNote: Copy images from your ChatGPT export to: {args.image_folder}")
+
+
+if __name__ == '__main__':
+    main()
