@@ -6,6 +6,7 @@ Convert ChatGPT exported conversations to Obsidian Copilot format.
 import json
 import os
 import re
+import html
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -133,61 +134,65 @@ def get_conversation_messages(conversation: Dict) -> List[Dict]:
     Returns list of {author, parts, create_time} dicts.
     """
     messages = []
-    current_node = conversation.get('current_node')
     mapping = conversation.get('mapping', {})
-    
-    while current_node:
-        node = mapping.get(current_node)
+
+    # Iterate all nodes in mapping so we include every branch
+    for node_id, node in mapping.items():
         if not node:
-            break
-            
+            continue
         message = node.get('message')
-        if message and message.get('content') and message['content'].get('parts'):
-            author_role = message.get('author', {}).get('role')
-            
-            # Skip system messages unless they're user system messages
-            if author_role == 'system':
-                current_node = node.get('parent')
-                continue
-            
-            # Map author roles
-            if author_role == 'assistant' or author_role == 'tool':
-                author = 'ai'
-            elif author_role == 'system':
-                author = 'user'  # Custom user info
-            else:
-                author = 'user'
-            
-            content_type = message['content'].get('content_type')
-            if content_type in ['text', 'multimodal_text']:
-                parts = []
-                for part in message['content']['parts']:
-                    if isinstance(part, str) and part.strip():
-                        parts.append({'text': part})
-                    elif isinstance(part, dict):
-                        if part.get('content_type') == 'audio_transcription':
-                            parts.append({'transcript': part.get('text', '')})
-                        elif part.get('content_type') in ['audio_asset_pointer', 'image_asset_pointer', 
-                                                          'video_container_asset_pointer']:
-                            parts.append({'asset': part})
-                        elif part.get('content_type') == 'real_time_user_audio_video_asset_pointer':
-                            if part.get('audio_asset_pointer'):
-                                parts.append({'asset': part['audio_asset_pointer']})
-                            if part.get('video_container_asset_pointer'):
-                                parts.append({'asset': part['video_container_asset_pointer']})
-                            for frame in part.get('frames_asset_pointers', []):
-                                parts.append({'asset': frame})
-                
-                if parts:
-                    messages.append({
-                        'author': author,
-                        'parts': parts,
-                        'create_time': message.get('create_time')
-                    })
-        
-        current_node = node.get('parent')
-    
-    return list(reversed(messages))
+        if not message or not message.get('content') or not message['content'].get('parts'):
+            continue
+
+        author_role = message.get('author', {}).get('role')
+
+        # Skip system messages unless they're marked as user system messages
+        if author_role == 'system' and not message.get('metadata', {}).get('is_user_system_message'):
+            continue
+
+        # Map author roles
+        if author_role in ('assistant', 'tool'):
+            author = 'ai'
+        elif author_role == 'system':
+            author = 'user'
+        else:
+            author = 'user'
+
+        content_type = message['content'].get('content_type')
+        if content_type in ['text', 'multimodal_text']:
+            parts = []
+            for part in message['content']['parts']:
+                if isinstance(part, str) and part.strip():
+                    parts.append({'text': part})
+                elif isinstance(part, dict):
+                    ptype = part.get('content_type')
+                    if ptype == 'audio_transcription':
+                        parts.append({'transcript': part.get('text', '')})
+                    elif ptype in ['audio_asset_pointer', 'image_asset_pointer', 'video_container_asset_pointer']:
+                        parts.append({'asset': part})
+                    elif ptype == 'real_time_user_audio_video_asset_pointer':
+                        if part.get('audio_asset_pointer'):
+                            parts.append({'asset': part['audio_asset_pointer']})
+                        if part.get('video_container_asset_pointer'):
+                            parts.append({'asset': part['video_container_asset_pointer']})
+                        for frame in part.get('frames_asset_pointers', []):
+                            parts.append({'asset': frame})
+
+            if parts:
+                messages.append({
+					'node_id': node_id, # For debugging purposes
+                    'author': author,
+                    'parts': parts,
+                    'create_time': message.get('create_time')
+                })
+
+    # Sort by create_time (oldest first). Put messages without timestamps at the end.
+    def _sort_key(m):
+        t = m.get('create_time')
+        return (t is None, t if t is not None else 0)
+
+    messages.sort(key=_sort_key)
+    return messages
 
 def format_message_parts(parts: List[Dict], assets_map: Dict[str, str], 
                          image_folder: str = 'Images/copilot-conversations-images') -> str:
@@ -199,9 +204,19 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
     
     for part in parts:
         if 'text' in part:
-            output.append(part['text'])
+            # Replace escaped LaTeX display delimiters (\[ ... \]) with Obsidian display math ($$ ... $$)
+            text = part['text']
+            if isinstance(text, str) and text:
+                text = text.replace('\\[', '$$').replace('\\]', '$$')
+                text = html.unescape(text)
+            output.append(text)
         elif 'transcript' in part:
-            output.append(f"[Transcript]: {part['transcript']}")
+            # Also replace escaped brackets in transcripts
+            transcript = part['transcript']
+            if isinstance(transcript, str) and transcript:
+                transcript = transcript.replace('\\[', '$$').replace('\\]', '$$')
+                transcript = html.unescape(transcript)
+            output.append(f"[Transcript]: {transcript}")
         elif 'asset' in part:
             asset_pointer = part['asset'].get('asset_pointer', '')
             if asset_pointer in assets_map:
@@ -337,7 +352,7 @@ def main():
             print(f"✗ Skipped conversation {conv_id}: No valid messages")
     
     print(f"\n✓ Converted {converted_count} conversations to {output_dir}")
-    print(f"\nNote: Copy images from your ChatGPT export to: {args.image_folder}")
+    print(f"\nNote: Copy images from your ChatGPT export to: {args.image_folder} of your Obsidian vault.")
 
 
 if __name__ == '__main__':
