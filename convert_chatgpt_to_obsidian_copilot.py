@@ -352,7 +352,7 @@ def main():
             print(f"✗ Skipped conversation {conv_id}: No valid messages")
     
     print(f"\n✓ Converted {converted_count} conversations to {output_dir}")
-    print(f"\nNote: Copy images from your ChatGPT export to: {args.image_folder} of your Obsidian vault.")
+    print(f"\nNote: Copy images from your ChatGPT export to your Obsidian vault.")
 
 
 if __name__ == '__main__':
