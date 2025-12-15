@@ -1,0 +1,157 @@
+<html>
+  <head>
+    <title>ChatGPT Data Export</title>
+    <style>
+      body {
+        margin: 20px;
+      }
+      h4 {
+        font-family: sans-serif;
+        margin: 0;
+      }
+      #root {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+      .conversation {
+        border: 1px solid black;
+        padding: 20px;
+        background-color: #f3f3f3;
+      }
+      .message {
+        white-space: pre-wrap;
+        margin: 20px 0;
+      }
+      .author {
+        font-weight: bold;
+        margin-bottom: 4px;
+      }
+      .author::first-letter {
+        text-transform: uppercase;
+      }
+      .timestamp {
+        font-weight: normal;
+        font-size: 0.9em;
+        margin-left: 8px;
+        color: #666;
+      }
+    </style>
+    <script>
+	// Add your JSON data here
+      var jsonData = []
+      var assetsJson = {}
+
+
+      function getConversationMessages(conversation) {
+          var messages = [];
+          var mapping = conversation.mapping || {};
+
+          // Collect every node in the mapping (include all branches)
+          for (var key in mapping) {
+              if (!Object.prototype.hasOwnProperty.call(mapping, key)) continue;
+              var node = mapping[key];
+              if (!node || !node.message || !node.message.content || !node.message.content.parts || node.message.content.parts.length === 0) continue;
+
+              // Skip system messages unless marked as user system messages
+              var role = (node.message.author && node.message.author.role) ? node.message.author.role : null;
+              if (role === "system" && !(node.message.metadata && node.message.metadata.is_user_system_message)) continue;
+
+              var author = role;
+              if (author === "assistant" || author === "tool") {
+                  author = "ChatGPT";
+              } else if (author === "system" && node.message.metadata && node.message.metadata.is_user_system_message) {
+                  author = "Custom user info";
+              } else if (!author) {
+                  author = "user";
+              }
+
+              if (node.message.content.content_type == "text" || node.message.content.content_type == "multimodal_text") {
+                var parts = [];
+                for (var i = 0; i < node.message.content.parts.length; i++) {
+                  var part = node.message.content.parts[i];
+                  if (typeof part === "string" && part.length > 0) {
+                    parts.push({text: part});
+                  } else if (part && part.content_type == "audio_transcription") {
+                    parts.push({transcript: part.text});
+                  } else if (part && (part.content_type == "audio_asset_pointer" || part.content_type == "image_asset_pointer" || part.content_type == "video_container_asset_pointer")) {
+                    parts.push({asset: part});
+                  } else if (part && part.content_type == "real_time_user_audio_video_asset_pointer") {
+                    if (part.audio_asset_pointer) {
+                      parts.push({asset: part.audio_asset_pointer});
+                    }
+                    if (part.video_container_asset_pointer) {
+                      parts.push({asset: part.video_container_asset_pointer});
+                    }
+                    if (Array.isArray(part.frames_asset_pointers)) {
+                      for (var j = 0; j < part.frames_asset_pointers.length; j++) {
+                        parts.push({asset: part.frames_asset_pointers[j]});
+                      }
+                    }
+                  }
+                }
+                if (parts.length > 0) {
+                  messages.push({ author: author, parts: parts, create_time: node.message.create_time });
+                }
+              }
+          }
+
+          // Sort messages by create_time (oldest first). Put messages without timestamps at the end.
+          messages.sort(function(a, b) {
+              if (a.create_time == null && b.create_time == null) return 0;
+              if (a.create_time == null) return 1;
+              if (b.create_time == null) return -1;
+              return a.create_time - b.create_time;
+          });
+
+          return messages;
+      }
+
+      // on load, add messages to the root div
+      window.onload = function() {
+          var root = document.getElementById("root");
+          for (var i = 0; i < jsonData.length; i++) {
+              var conversation = jsonData[i];
+              var messages = getConversationMessages(conversation);
+              var div = document.createElement("div");
+              div.className = "conversation";
+              div.innerHTML = "<h4>" + conversation.title + "</h4>";
+              for (var j = 0; j < messages.length; j++) {
+                  var message = document.createElement("pre");
+                  message.className = "message";
+                  var timestamp = '';
+                  if (messages[j].create_time) {
+                    var dt = new Date(messages[j].create_time * 1000);
+                    timestamp = dt.toLocaleString();
+                  }
+                  message.innerHTML = `<div class="author">${messages[j].author}${timestamp ? '<span class="timestamp"> — ' + timestamp + '</span>' : ''}</div>`;
+                  if (messages[j].parts) {
+                    for (var k = 0; k < messages[j].parts.length; k++) {
+                      var part = messages[j].parts[k];
+                      if (part.text) {
+                        message.innerHTML += `<div>${part.text}</div>`;
+                      } else if (assetsJson) {
+                        if (part.transcript) {
+                          message.innerHTML += `<div>[Transcript]: ${part.transcript}</div>`;
+                        } else if (part.asset) {
+                          var link = assetsJson[part.asset.asset_pointer];
+                          if (link) {
+                            message.innerHTML += `<div>[File]: <a href="${link}">${link}</a></div>`;
+                          } else {
+                            message.innerHTML += `<div>[File]: -Deleted-</div>`;
+                          }
+                        }
+                      }
+                    }
+                  }
+                  div.appendChild(message);
+              }
+              root.appendChild(div);
+          }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
