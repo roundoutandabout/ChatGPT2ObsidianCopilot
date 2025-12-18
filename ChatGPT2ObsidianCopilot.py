@@ -194,8 +194,7 @@ def get_conversation_messages(conversation: Dict) -> List[Dict]:
     messages.sort(key=_sort_key)
     return messages
 
-def format_message_parts(parts: List[Dict], assets_map: Dict[str, str], 
-                         image_folder: str = 'Images/copilot-conversations-images') -> str:
+def format_message_parts(parts: List[Dict], assets_map: Dict[str, str]) -> str:
     """
     Format message parts into markdown text.
     Handles text, transcripts, and asset pointers (images/audio/video).
@@ -272,7 +271,7 @@ def convert_conversation_to_markdown(conversation: Dict, assets_map: Dict[str, s
     
     # YAML frontmatter
     lines.append('---')
-    lines.append(f'epoch: {int(create_time * 1000)}')  # Convert to milliseconds
+    lines.append(f'epoch: {int(create_time) * 1000}')  # Convert to milliseconds (rounded to nearest second)
     lines.append('modelKey: "openai/gpt-oss-120b|openrouterai"')
     lines.append(f'topic: "{title}"')
     lines.append('')
@@ -319,8 +318,6 @@ def main():
     parser.add_argument('--assets', help='Path to assets.json file (optional)')
     parser.add_argument('--html', help='Path to chat.html file (extracts jsonData and assetsJson variables)')
     parser.add_argument('--output-dir', default='./converted', help='Output directory for markdown files')
-    parser.add_argument('--image-folder', default='Images/copilot-conversations-images', 
-                       help='Folder path for images in Obsidian vault')
     
     args = parser.parse_args()
     
