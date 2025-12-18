@@ -263,10 +263,9 @@ def convert_conversation_to_markdown(conversation: Dict, assets_map: Dict[str, s
             first_text = part['text']
             break
     
-    # Generate filename
-    topic_part = sanitize_filename(first_text, max_words=10)
-    date_part = epoch_to_filename_date(create_time)
-    filename = f"{topic_part}@{date_part}.md"
+    # Generate filename from conversation title
+    topic_part = sanitize_filename(title, max_words=10)
+    filename = f"{topic_part}.md"
     
     # Build markdown content
     lines = []
@@ -296,6 +295,20 @@ def convert_conversation_to_markdown(conversation: Dict, assets_map: Dict[str, s
             lines.append('')
     
     return filename, '\n'.join(lines)
+
+def unique_filepath(output_dir: Path, filename: str) -> Path:
+    """Return a Path inside output_dir that does not yet exist by appending numbered suffixes.
+
+    Example: topic.md -> topic.md, topic_1.md, topic_2.md
+    """
+    base = Path(filename).stem
+    ext = Path(filename).suffix or '.md'
+    candidate = output_dir / filename
+    i = 1
+    while candidate.exists():
+        candidate = output_dir / f"{base}_{i}{ext}"
+        i += 1
+    return candidate
 
 def main():
     """Main conversion function."""
@@ -344,10 +357,11 @@ def main():
         filename, markdown = convert_conversation_to_markdown(conversation, assets_map)
         
         if filename and markdown:
-            output_path = output_dir / filename
+            # ensure unique filename by auto-appending numeric suffixes when necessary
+            output_path = unique_filepath(output_dir, filename)
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(markdown)
-            print(f"✓ Converted: {filename}")
+            print(f"✓ Converted: {output_path.name}")
             converted_count += 1
         else:
             conv_id = conversation.get('id', 'unknown')
