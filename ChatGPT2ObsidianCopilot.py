@@ -115,18 +115,18 @@ def epoch_to_filename_date(epoch: float) -> str:
 
 def sanitize_filename(text: str, max_words: int = 10) -> str:
     """
-    Extract first N words and convert to underscore-separated filename.
-    Remove special characters and limit length.
+    Extract first N words and return a cleaned title preserving spaces.
+    Removes special characters but keeps spaces so titles remain human-readable.
     """
-    # Remove special characters, keep only alphanumeric and spaces
+    # Remove special characters, keep only alphanumeric, spaces and hyphens
     text = re.sub(r'[^\w\s-]', '', text)
-    # Split into words and take first max_words
-    words = text.split()[:max_words]
-    # Join with underscores and remove extra whitespace
-    filename = '_'.join(words)
-    # Remove multiple underscores
-    filename = re.sub(r'_+', '_', filename)
-    return filename.strip('_')
+    # Normalize whitespace and split into words, taking first max_words
+    words = re.sub(r'\s+', ' ', text).strip().split()[:max_words]
+    # Join with single spaces and trim
+    filename = ' '.join(words)
+    # Collapse multiple spaces (defensive) and strip
+    filename = re.sub(r'\s+', ' ', filename).strip()
+    return filename
 
 def get_conversation_messages(conversation: Dict) -> List[Dict]:
     """
