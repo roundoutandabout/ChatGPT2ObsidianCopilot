@@ -11,6 +11,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+# Default model key for frontmatter
+DEFAULT_MODEL = 'openai/gpt-oss-120b|openrouterai'
+
 def extract_json_from_html(html_file: str) -> Tuple[Optional[List], Optional[Dict]]:
     """
     Extract jsonData and assetsJson variables from chat.html file.
@@ -231,7 +234,7 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str]) -> str:
     
     return '\n'.join(output)
 
-def convert_conversation_to_markdown(conversation: Dict, assets_map: Dict[str, str]) -> tuple[str, str]:
+def convert_conversation_to_markdown(conversation: Dict, assets_map: Dict[str, str], model: str = DEFAULT_MODEL) -> tuple[str, str]:
     """
     Convert a single conversation to Obsidian Copilot markdown format.
     Returns (filename, markdown_content).
@@ -272,7 +275,7 @@ def convert_conversation_to_markdown(conversation: Dict, assets_map: Dict[str, s
     # YAML frontmatter
     lines.append('---')
     lines.append(f'epoch: {int(create_time) * 1000}')  # Convert to milliseconds (rounded to nearest second)
-    lines.append('modelKey: "openai/gpt-oss-120b|openrouterai"')
+    lines.append(f'modelKey: "{model}"')
     lines.append(f'topic: "{title}"')
     lines.append('')
     lines.append('')
@@ -318,6 +321,7 @@ def main():
     parser.add_argument('--assets', help='Path to assets.json file (optional)')
     parser.add_argument('--html', help='Path to chat.html file (extracts jsonData and assetsJson variables)')
     parser.add_argument('--output-dir', default='./converted', help='Output directory for markdown files')
+    parser.add_argument('--model', default=DEFAULT_MODEL, help='Model key for frontmatter')
     
     args = parser.parse_args()
     
@@ -351,7 +355,7 @@ def main():
     # Convert each conversation
     converted_count = 0
     for conversation in conversations:
-        filename, markdown = convert_conversation_to_markdown(conversation, assets_map)
+        filename, markdown = convert_conversation_to_markdown(conversation, assets_map, args.model)
         
         if filename and markdown:
             # ensure unique filename by auto-appending numeric suffixes when necessary
