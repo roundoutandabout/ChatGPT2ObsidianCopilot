@@ -238,11 +238,13 @@ def convert_conversation_to_markdown(conversation: Dict, assets_map: Dict[str, s
     Returns (filename, markdown_content).
     """
     title = conversation.get('title', 'Untitled')
-    create_time = conversation.get('create_time', 0)
     messages = get_conversation_messages(conversation)
     
     if not messages:
         return None, None
+    
+    # Get create_time from first message so epoch frontmatter matches first message timestamp
+    create_time = messages[0].get('create_time', 0)
     
     # Get first user message for filename
     first_user_msg = None
