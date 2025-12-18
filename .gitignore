@@ -1,3 +1,4 @@
-chatgpt-data*/
+chatgpt-data*/**
+chatgpt-export*/**
 .vscode
 __pycache__
