@@ -121,8 +121,9 @@ def sanitize_filename(text: str, max_words: int = 10) -> str:
     Extract first N words and return a cleaned title preserving spaces.
     Removes special characters but keeps spaces so titles remain human-readable.
     """
-    # Remove special characters, keep only alphanumeric, spaces and hyphens
-    text = re.sub(r'[^\w\s-]', '', text)
+    # Remove only path/divider characters that are invalid in filenames of Obsidian
+    # Keep other punctuation characters so titles remain human-readable.
+    text = re.sub(r'[\\/:]', '', text)
     # Normalize whitespace and split into words, taking first max_words
     words = re.sub(r'\s+', ' ', text).strip().split()[:max_words]
     # Join with single spaces and trim
