@@ -183,11 +183,15 @@ def get_conversation_messages(conversation: Dict) -> List[Dict]:
                             parts.append({'asset': frame})
 
             if parts:
+                # Capture any content_references from the message metadata so we can
+                # replace matched tokens with displayable alt/link text later.
+                content_refs = message.get('metadata', {}).get('content_references', [])
                 messages.append({
-					'node_id': node_id, # For debugging purposes
+                    'node_id': node_id, # For debugging purposes
                     'author': author,
                     'parts': parts,
-                    'create_time': message.get('create_time')
+                    'create_time': message.get('create_time'),
+                    'content_references': content_refs
                 })
 
     # Sort by create_time (oldest first). Put messages without timestamps at the end.
@@ -198,16 +202,53 @@ def get_conversation_messages(conversation: Dict) -> List[Dict]:
     messages.sort(key=_sort_key)
     return messages
 
-def format_message_parts(parts: List[Dict], assets_map: Dict[str, str]) -> str:
+def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
+                         content_references: List[Dict] | None = None) -> str:
     """
     Format message parts into markdown text.
     Handles text, transcripts, and asset pointers (images/audio/video).
     """
     output = []
     
+    # Prepare text parts for position-based replacement if references provide indices.
+    # Collect indices of text parts and their content.
+    text_part_indexes = [i for i, p in enumerate(parts) if 'text' in p]
+    if text_part_indexes and content_references:
+        # Gather refs that include start/end indices
+        indexed_refs = [r for r in content_references if r.get('start_idx') is not None and r.get('end_idx') is not None and r.get('alt')]
+        if indexed_refs:
+            # Build a single full_text by concatenating all text parts in order
+            texts = [parts[i]['text'] for i in text_part_indexes]
+            full_text = ''.join(texts)
+
+            # Normalize: JSON already contains real newlines and unicode codepoints,
+            # indices in refs are expected to match this representation.
+
+            # Sort refs descending by start_idx to avoid shifting indices when replacing
+            indexed_refs.sort(key=lambda r: r.get('start_idx', 0), reverse=True)
+            for ref in indexed_refs:
+                start = int(ref.get('start_idx'))
+                end = int(ref.get('end_idx'))
+                alt = ref.get('alt', '')
+                # Validate indices
+                if 0 <= start < end <= len(full_text) and alt:
+                    # Optionally verify matched_text matches span
+                    matched = ref.get('matched_text')
+                    span = full_text[start:end]
+                    if matched is None or matched == span:
+                        full_text = full_text[:start] + alt + full_text[end:]
+
+            # Replace original text parts with the modified full_text — put into first text part
+            for idx, part_idx in enumerate(text_part_indexes):
+                if idx == 0:
+                    parts[part_idx]['text'] = full_text
+                else:
+                    # clear other parts since we've collapsed them
+                    parts[part_idx]['text'] = ''
+
     for part in parts:
         if 'text' in part:
-            # Replace escaped LaTeX display delimiters (\[ ... \]) with Obsidian display math ($$ ... $$)
+            # Replace escaped LaTeX display delimiters (\\[ ... \\]) with Obsidian display math ($$ ... $$)
             text = part['text']
             if isinstance(text, str) and text:
                 text = text.replace('\\[', '$$').replace('\\]', '$$')
@@ -217,6 +258,13 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str]) -> str:
             # Also replace escaped brackets in transcripts
             transcript = part['transcript']
             if isinstance(transcript, str) and transcript:
+                if content_references:
+                    for ref in content_references:
+                        matched = ref.get('matched_text')
+                        alt = ref.get('alt')
+                        if matched and alt:
+                            transcript = transcript.replace(matched, alt)
+
                 transcript = transcript.replace('\\[', '$$').replace('\\]', '$$')
                 transcript = html.unescape(transcript)
             output.append(f"[Transcript]: {transcript}")
@@ -288,7 +336,7 @@ def convert_conversation_to_markdown(conversation: Dict, assets_map: Dict[str, s
     # Messages
     for msg in messages:
         author = msg['author']
-        content = format_message_parts(msg['parts'], assets_map)
+        content = format_message_parts(msg['parts'], assets_map, msg.get('content_references', []))
         timestamp = epoch_to_timestamp(msg['create_time']) if msg.get('create_time') else ''
         
         if content.strip():  # Only add non-empty messages
