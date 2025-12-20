@@ -6,6 +6,7 @@ Convert ChatGPT exported conversations to Obsidian Copilot format.
 import json
 import os
 import re
+import unicodedata
 import html
 from datetime import datetime
 from pathlib import Path
@@ -210,12 +211,184 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
     """
     output = []
     
+    # Helper to build display text from a content_reference
+    def build_reference_markdown(ref: Dict) -> str:
+        rtype = ref.get('type')
+        # grouped_webpages: build markdown links from items list
+        if rtype == 'grouped_webpages' and ref.get('items'):
+            links = []
+            for it in ref.get('items', []):
+                title = it.get('title') or it.get('attribution') or it.get('url')
+                url = it.get('url')
+                snippet = it.get('snippet')
+                if url:
+                    if title:
+                        link_text = f"[{title}]({url})"
+                    else:
+                        link_text = f"[{url}]({url})"
+                    if snippet:
+                        link_text += f" *{snippet}*"
+                    links.append(link_text)
+                
+                # Add supporting_websites if present within this item
+                supporting = it.get('supporting_websites', [])
+                if supporting:
+                    support_links = []
+                    for idx, sw in enumerate(supporting, start=1):
+                        url_sw = sw.get('url')
+                        if url_sw:
+                            # Escape square brackets in the supporting link text
+                            support_links.append(f"[{idx}]({url_sw})")
+                    if support_links:
+                        links.append(f"{', '.join(support_links)}")
+            
+            if links:
+                return f"({' '.join(links)})"
+        # image_group: embed images
+        if rtype == 'image_group' and ref.get('images'):
+            img_embeds = []
+            title_links = []
+            for im in ref.get('images', []):
+                img_result = im.get('image_result', {})
+                content_url = img_result.get('content_url')
+                if content_url:
+                    # Build image embed with search query and width if available
+                    search_query = im.get('image_search_query', '')
+                    width = img_result.get('thumbnail_size', {}).get('width')
+                    if width:
+                        img_embeds.append(f"![{search_query}|{width}]({content_url})")
+                    else:
+                        img_embeds.append(f"![{search_query}]({content_url})")
+                
+                # Build title link if available
+                title = img_result.get('title')
+                url = img_result.get('url')
+                if title and url:
+                    title_links.append(f"[{title}]({url})")
+            
+            # Combine embeds and links
+            result_parts = []
+            if img_embeds:
+                result_parts.append(' '.join(img_embeds))
+            if title_links:
+                result_parts.append('\n'.join(title_links))
+            
+            if result_parts:
+                return '\n'.join(result_parts)
+        # products: format an array of product-like entries as a markdown table
+        if rtype == 'products' and ref.get('products'):
+            prods = ref.get('products', [])
+            img_cells = []
+            title_cells = []
+            for p in prods:
+                # Prefer explicit title, then name
+                title = p.get('title') or p.get('name') or ''
+                url = p.get('url')
+
+                # Try first product image if present
+                image_url = None
+                imgs = p.get('image_urls') or p.get('images')
+                if isinstance(imgs, list) and imgs:
+                    image_url = imgs[0]
+
+                # build image cell
+                if image_url:
+                    img_cells.append(f"![{title}]({image_url})")
+                else:
+                    img_cells.append("")
+
+                # build title/link cell (with merchant/price metadata)
+                merchants = p.get('merchant') or p.get('merchants')
+                price = p.get('price')
+                if url:
+                    main = f"[{title or url}]({url})"
+                else:
+                    main = title or ''
+                meta = []
+                if merchants:
+                    meta.append(str(merchants))
+                if price is not None:
+                    meta.append(str(price))
+                if meta and main:
+                    main = f"{main} — {' \\| '.join(meta)}"
+
+                title_cells.append(main)
+
+            # Build markdown table: imgs row, separator, titles row
+            if img_cells or title_cells:
+                # ensure equal length
+                n = max(len(img_cells), len(title_cells))
+                while len(img_cells) < n:
+                    img_cells.append("")
+                while len(title_cells) < n:
+                    title_cells.append("")
+
+                row1 = "| " + " | ".join(img_cells) + " |"
+                sep = "| " + " | ".join(["---"] * n) + " |"
+                row2 = "| " + " | ".join(title_cells) + " |"
+                return "\n".join([row1, sep, row2])
+        # product_entity: format single product as a one-column markdown table
+        if rtype == 'product_entity' and ref.get('product'):
+            p = ref.get('product')
+            # Prefer explicit title, then name
+            title = p.get('title') or p.get('name') or ''
+            url = p.get('url')
+
+            # Try first product image if present
+            image_url = None
+            imgs = p.get('image_urls') or p.get('images')
+            if isinstance(imgs, list) and imgs:
+                image_url = imgs[0]
+
+            merchants = p.get('merchant') or p.get('merchants')
+            price = p.get('price')
+
+            # Image cell
+            img_cell = f"![{title}]({image_url})" if image_url else ''
+
+            # Title/link cell
+            if url:
+                main = f"[{title or url}]({url})"
+            else:
+                main = title or ''
+
+            meta = []
+            if merchants:
+                meta.append(str(merchants))
+            if price is not None:
+                meta.append(str(price))
+            if meta and main:
+                # Escape pipe '|' in meta join so it won't break the markdown table
+                main = f"{main} — {' \\| '.join(meta)}"
+
+            if not img_cell and not main:
+                return ''
+
+            row1 = "| " + img_cell + " |"
+            sep = "| --- |"
+            row2 = "| " + main + " |"
+            return "\n".join([row1, sep, row2])
+        # sources_footnote: verbose block to append at end of message
+        if rtype == 'sources_footnote' and ref.get('sources'):
+            lines = ['\n* Sources:']
+            for s in ref.get('sources', []):
+                title = s.get('title') or s.get('attribution') or s.get('url')
+                url = s.get('url')
+                if url:
+                    lines.append(f"\t* [{title}]({url})")
+            # Ensure trailing newline after block
+            lines.append('')
+            return '\n'.join(lines)
+        return ''
+
+    # (sources footnote formatting is handled inside build_reference_markdown)
+
     # Prepare text parts for position-based replacement if references provide indices.
     # Collect indices of text parts and their content.
     text_part_indexes = [i for i, p in enumerate(parts) if 'text' in p]
     if text_part_indexes and content_references:
         # Gather refs that include start/end indices
-        indexed_refs = [r for r in content_references if r.get('start_idx') is not None and r.get('end_idx') is not None and r.get('alt')]
+        indexed_refs = [r for r in content_references if r.get('start_idx') is not None and r.get('end_idx') is not None]
         if indexed_refs:
             # Build a single full_text by concatenating all text parts in order
             texts = [parts[i]['text'] for i in text_part_indexes]
@@ -226,18 +399,48 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
 
             # Sort refs descending by start_idx to avoid shifting indices when replacing
             indexed_refs.sort(key=lambda r: r.get('start_idx', 0), reverse=True)
+            # Collect sources_footnote blocks to append after all replacements
+            sources_blocks: List[str] = []
             for ref in indexed_refs:
+                # Build replacement text based on type
+                alt = build_reference_markdown(ref)
+                # If this is a sources_footnote, collect its block and do not try to
+                # replace at its indices (indices may be equal and matched_text could be a space)
+                if ref.get('type') == 'sources_footnote':
+                    if alt:
+                        sources_blocks.append(alt)
+                    continue
+
                 start = int(ref.get('start_idx'))
                 end = int(ref.get('end_idx'))
-                alt = ref.get('alt', '')
                 # Validate indices
                 if 0 <= start < end <= len(full_text) and alt:
-                    # Optionally verify matched_text matches span
-                    matched = ref.get('matched_text')
-                    span = full_text[start:end]
-                    if matched is None or matched == span:
-                        full_text = full_text[:start] + alt + full_text[end:]
+                        # Optionally verify matched_text matches span. Normalize
+                        # Unicode differences (non-breaking spaces, narrow no-break spaces,
+                        # and hyphen-like characters) before comparing so small
+                        # formatting differences don't prevent replacements.
+                        def _normalize_for_compare(s: Optional[str]) -> Optional[str]:
+                            if s is None:
+                                return None
+                            # NFC normalize, then map common non-breaking spaces to regular
+                            s = unicodedata.normalize('NFC', s)
+                            s = s.replace('\u00A0', ' ').replace('\u202F', ' ')
+                            # Map a few hyphen-like characters to ASCII hyphen
+                            for ch in ('\u2010', '\u2011', '\u2012', '\u2013', '\u2014'):
+                                s = s.replace(ch, '-')
+                            # Collapse any whitespace runs to a single space for robust matching
+                            s = re.sub(r'\s+', ' ', s)
+                            return s
 
+                        matched = ref.get('matched_text')
+                        span = full_text[start:end]
+                        if matched is None or _normalize_for_compare(matched) == _normalize_for_compare(span):
+                            full_text = full_text[:start] + alt + full_text[end:]
+
+            # After processing indexed refs, append any collected sources footnote blocks
+            if sources_blocks:
+                full_text = full_text + '\n' + '\n'.join(sources_blocks)
+            
             # Replace original text parts with the modified full_text — put into first text part
             for idx, part_idx in enumerate(text_part_indexes):
                 if idx == 0:
@@ -261,7 +464,8 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
                 if content_references:
                     for ref in content_references:
                         matched = ref.get('matched_text')
-                        alt = ref.get('alt')
+                        # For non-indexed refs, build alt from type/items if needed
+                        alt = build_reference_markdown(ref)
                         if matched and alt:
                             transcript = transcript.replace(matched, alt)
 
