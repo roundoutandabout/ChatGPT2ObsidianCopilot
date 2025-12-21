@@ -451,6 +451,12 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
             texts = [parts[i]['text'] for i in text_part_indexes]
             full_text = ''.join(texts)
 
+            # Some exports HTML-escape characters like '"' and '&' into
+            # "&quot;" and "&amp;". The content_references' start_idx/end_idx
+            # are measured against the unescaped text, so unescape here so
+            # index-based replacements match the spans correctly.
+            full_text = html.unescape(full_text)
+
             # Normalize: JSON already contains real newlines and unicode codepoints,
             # indices in refs are expected to match this representation.
 
@@ -514,6 +520,11 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
                             return s
 
                         matched = ref.get('matched_text')
+                        # Ensure matched_text is unescaped as well so comparisons
+                        # succeed when refs include characters that were HTML-escaped
+                        # in the original parts.
+                        if isinstance(matched, str):
+                            matched = html.unescape(matched)
                         span = full_text[start:end]
                         if matched is None or _normalize_for_compare(matched) == _normalize_for_compare(span):
                             full_text = full_text[:start] + alt + full_text[end:]
