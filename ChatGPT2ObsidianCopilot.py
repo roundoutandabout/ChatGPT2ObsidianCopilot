@@ -214,8 +214,8 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
     # Helper to build display text from a content_reference
     def build_reference_markdown(ref: Dict) -> str:
         rtype = ref.get('type')
-        # grouped_webpages: build markdown links from items list
-        if rtype == 'grouped_webpages' and ref.get('items'):
+        # grouped_webpages (and model-predicted fallback): build markdown links from items list
+        if rtype in ('grouped_webpages', 'grouped_webpages_model_predicted_fallback') and ref.get('items'):
             links = []
             for it in ref.get('items', []):
                 title = it.get('title') or it.get('attribution') or it.get('url')
@@ -244,10 +244,10 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
             
             if links:
                 return f"({' '.join(links)})"
-        # image_group: embed images
+        # image_group: format images and links as a markdown table (images row, links row)
         if rtype == 'image_group' and ref.get('images'):
-            img_embeds = []
-            title_links = []
+            img_cells = []
+            title_cells = []
             for im in ref.get('images', []):
                 img_result = im.get('image_result', {})
                 content_url = img_result.get('content_url')
@@ -256,25 +256,81 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
                     search_query = im.get('image_search_query', '')
                     width = img_result.get('thumbnail_size', {}).get('width')
                     if width:
-                        img_embeds.append(f"![{search_query}|{width}]({content_url})")
+                        cell = f"![{search_query}|{width}]({content_url})"
                     else:
-                        img_embeds.append(f"![{search_query}]({content_url})")
-                
+                        cell = f"![{search_query}]({content_url})"
+                    # Escape any '|' characters so table columns are not broken
+                    cell = cell.replace('|', '\\|')
+                    img_cells.append(cell)
+                else:
+                    img_cells.append("")
+
                 # Build title link if available
                 title = img_result.get('title')
                 url = img_result.get('url')
                 if title and url:
-                    title_links.append(f"[{title}]({url})")
-            
-            # Combine embeds and links
-            result_parts = []
-            if img_embeds:
-                result_parts.append(' '.join(img_embeds))
-            if title_links:
-                result_parts.append('\n'.join(title_links))
-            
-            if result_parts:
-                return '\n'.join(result_parts)
+                    tcell = f"[{title}]({url})"
+                    tcell = tcell.replace('|', '\\|')
+                    title_cells.append(tcell)
+                else:
+                    title_cells.append("")
+
+            # Build markdown table: imgs row, separator, titles row
+            if img_cells or title_cells:
+                n = max(len(img_cells), len(title_cells))
+                while len(img_cells) < n:
+                    img_cells.append("")
+                while len(title_cells) < n:
+                    title_cells.append("")
+
+                row1 = "\n| " + " | ".join(img_cells) + " |"
+                sep = "| " + " | ".join(["---"] * n) + " |"
+                row2 = "| " + " | ".join(title_cells) + " |"
+                return "\n".join([row1, sep, row2])
+        # image_v2: same as image_group but different field names (url, content_url, title, thumbnail_size.width)
+        if rtype == 'image_v2' and ref.get('images'):
+            img_cells = []
+            title_cells = []
+            for im in ref.get('images', []):
+                # image_v2 elements: url, content_url, title, thumbnail_size.width
+                content_url = im.get('content_url') or im.get('url')
+                title = im.get('title')
+                width = None
+                thumb = im.get('thumbnail_size') or {}
+                if isinstance(thumb, dict):
+                    width = thumb.get('width')
+
+                if content_url:
+                    search_query = title or ''
+                    if width:
+                        cell = f"![{search_query}|{width}]({content_url})"
+                    else:
+                        cell = f"![{search_query}]({content_url})"
+                    cell = cell.replace('|', '\\|')
+                    img_cells.append(cell)
+                else:
+                    img_cells.append("")
+
+                # title link
+                url = im.get('url')
+                if title and url:
+                    tcell = f"[{title}]({url})"
+                    tcell = tcell.replace('|', '\\|')
+                    title_cells.append(tcell)
+                else:
+                    title_cells.append("")
+
+            if img_cells or title_cells:
+                n = max(len(img_cells), len(title_cells))
+                while len(img_cells) < n:
+                    img_cells.append("")
+                while len(title_cells) < n:
+                    title_cells.append("")
+
+                row1 = "\n| " + " | ".join(img_cells) + " |"
+                sep = "| " + " | ".join(["---"] * n) + " |"
+                row2 = "| " + " | ".join(title_cells) + " |"
+                return "\n".join([row1, sep, row2])
         # products: format an array of product-like entries as a markdown table
         if rtype == 'products' and ref.get('products'):
             prods = ref.get('products', [])
@@ -293,7 +349,9 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
 
                 # build image cell
                 if image_url:
-                    img_cells.append(f"![{title}]({image_url})")
+                    cell = f"![{title}]({image_url})"
+                    cell = cell.replace('|', '\\|')
+                    img_cells.append(cell)
                 else:
                     img_cells.append("")
 
@@ -310,9 +368,10 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
                 if price is not None:
                     meta.append(str(price))
                 if meta and main:
-                    main = f"{main} — {' \\| '.join(meta)}"
+                    main = f"{main} — {' | '.join(meta)}"
 
-                title_cells.append(main)
+                # escape '|' in title cell
+                title_cells.append(main.replace('|', '\\|'))
 
             # Build markdown table: imgs row, separator, titles row
             if img_cells or title_cells:
@@ -323,11 +382,11 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
                 while len(title_cells) < n:
                     title_cells.append("")
 
-                row1 = "| " + " | ".join(img_cells) + " |"
+                row1 = "\n| " + " | ".join(img_cells) + " |"
                 sep = "| " + " | ".join(["---"] * n) + " |"
                 row2 = "| " + " | ".join(title_cells) + " |"
                 return "\n".join([row1, sep, row2])
-        # product_entity: format single product as a one-column markdown table
+        # product_entity: render image and title on separate lines
         if rtype == 'product_entity' and ref.get('product'):
             p = ref.get('product')
             # Prefer explicit title, then name
@@ -343,10 +402,11 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
             merchants = p.get('merchant') or p.get('merchants')
             price = p.get('price')
 
-            # Image cell
-            img_cell = f"![{title}]({image_url})" if image_url else ''
+            parts = []
+            if image_url:
+                parts.append(f"![{title}]({image_url})")
 
-            # Title/link cell
+            # Build main product line with optional merchants/price
             if url:
                 main = f"[{title or url}]({url})"
             else:
@@ -358,16 +418,13 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
             if price is not None:
                 meta.append(str(price))
             if meta and main:
-                # Escape pipe '|' in meta join so it won't break the markdown table
                 main = f"{main} — {' \\| '.join(meta)}"
 
-            if not img_cell and not main:
-                return ''
+            if main:
+                parts.append(main)
 
-            row1 = "| " + img_cell + " |"
-            sep = "| --- |"
-            row2 = "| " + main + " |"
-            return "\n".join([row1, sep, row2])
+            # Place image and title/link on the same line separated by a space
+            return ' '.join([p for p in parts if p]) if parts else ''
         # sources_footnote: verbose block to append at end of message
         if rtype == 'sources_footnote' and ref.get('sources'):
             lines = ['\n* Sources:']
@@ -402,6 +459,30 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
             # Collect sources_footnote blocks to append after all replacements
             sources_blocks: List[str] = []
             for ref in indexed_refs:
+                # If this is a sources_footnote, collect its block and do not try to
+                # replace at its indices (indices may be equal and matched_text could be a space)
+                if ref.get('type') == 'sources_footnote':
+                    alt = build_reference_markdown(ref)
+                    if alt:
+                        sources_blocks.append(alt)
+                    continue
+
+                # If this is a hidden reference, remove the span without replacement
+                if ref.get('type') == 'hidden':
+                    start = int(ref.get('start_idx'))
+                    end = int(ref.get('end_idx'))
+                    if 0 <= start < end <= len(full_text):
+                        full_text = full_text[:start] + full_text[end:]
+                    continue
+
+                # If grouped_webpages (or model-predicted fallback) has empty items, remove the span without replacement
+                if ref.get('type') in ('grouped_webpages', 'grouped_webpages_model_predicted_fallback') and not ref.get('items'):
+                    start = int(ref.get('start_idx'))
+                    end = int(ref.get('end_idx'))
+                    if 0 <= start < end <= len(full_text):
+                        full_text = full_text[:start] + full_text[end:]
+                    continue
+
                 # Build replacement text based on type
                 alt = build_reference_markdown(ref)
                 # If this is a sources_footnote, collect its block and do not try to
