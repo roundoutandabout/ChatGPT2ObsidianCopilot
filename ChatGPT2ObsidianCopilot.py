@@ -612,7 +612,8 @@ def convert_conversation_to_markdown(conversation: Dict, assets_map: Dict[str, s
     
     # Generate filename from conversation title
     topic_part = sanitize_filename(title, max_words=10)
-    filename = f"{topic_part}.md"
+    timestamp = epoch_to_filename_date(create_time)
+    filename = f"{topic_part} @{timestamp}.md"
     
     # Build markdown content
     lines = []
