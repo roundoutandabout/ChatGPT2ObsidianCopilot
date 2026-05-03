@@ -28,8 +28,9 @@ A Python tool that converts exported ChatGPT conversations to Markdown format co
    - `--html <file>` — Extract conversations from `chat.html` (includes assets automatically)
    - `conversations.json` — Path to the JSON file (use with `--assets`)
    - `--assets <file>` — Path to `assets.json` containing media references (optional, auto-extracted with `--html`)
+      - Copy the contents of variable `assetsJson` from exported `chat.html` to `assets.json`
    - `--output-dir <dir>` — Output directory for generated Markdown files
-   - `--model <key>` — AI model key for the Copilot plugin (optional, defaults to `openai/gpt-oss-120b|openrouterai`)
+   - `--model <key>` — AI model key for the Obsidian Copilot plugin (optional, defaults to `openai/gpt-oss-120b|openrouterai`)
 
 ## Step 3: Import into Obsidian
 
