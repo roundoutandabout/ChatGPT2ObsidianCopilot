@@ -184,15 +184,18 @@ def get_conversation_messages(conversation: Dict) -> List[Dict]:
                             parts.append({'asset': frame})
 
             if parts:
-                # Capture any content_references from the message metadata so we can
-                # replace matched tokens with displayable alt/link text later.
-                content_refs = message.get('metadata', {}).get('content_references', [])
+                # Capture any content_references and search_result_groups from the message metadata
+                # so we can replace matched tokens and append sources later.
+                metadata = message.get('metadata', {})
+                content_refs = metadata.get('content_references', [])
+                search_result_groups = metadata.get('search_result_groups', [])
                 messages.append({
                     'node_id': node_id, # For debugging purposes
                     'author': author,
                     'parts': parts,
                     'create_time': message.get('create_time'),
-                    'content_references': content_refs
+                    'content_references': content_refs,
+                    'search_result_groups': search_result_groups
                 })
 
     # Sort by create_time (oldest first). Put messages without timestamps at the end.
@@ -204,7 +207,8 @@ def get_conversation_messages(conversation: Dict) -> List[Dict]:
     return messages
 
 def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
-                         content_references: List[Dict] | None = None) -> str:
+                         content_references: List[Dict] | None = None,
+                         search_result_groups: List[Dict] | None = None) -> str:
     """
     Format message parts into markdown text.
     Handles text, transcripts, and asset pointers (images/audio/video).
@@ -230,17 +234,21 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
                         link_text += f" *{snippet}*"
                     links.append(link_text)
                 
-                # Add supporting_websites if present within this item
+                # Add supporting_websites if present within this item (format same as items)
                 supporting = it.get('supporting_websites', [])
                 if supporting:
-                    support_links = []
-                    for idx, sw in enumerate(supporting, start=1):
-                        url_sw = sw.get('url')
-                        if url_sw:
-                            # Escape square brackets in the supporting link text
-                            support_links.append(f"[{idx}]({url_sw})")
-                    if support_links:
-                        links.append(f"{', '.join(support_links)}")
+                    for sw in supporting:
+                        sw_title = sw.get('title') or sw.get('attribution') or sw.get('url')
+                        sw_url = sw.get('url')
+                        sw_snippet = sw.get('snippet')
+                        if sw_url:
+                            if sw_title:
+                                sw_link = f"[{sw_title}]({sw_url})"
+                            else:
+                                sw_link = f"[{sw_url}]({sw_url})"
+                            if sw_snippet:
+                                sw_link += f" *{sw_snippet}*"
+                            links.append(sw_link)
             
             if links:
                 return f"({' '.join(links)})"
@@ -425,20 +433,9 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
 
             # Place image and title/link on the same line separated by a space
             return ' '.join([p for p in parts if p]) if parts else ''
-        # sources_footnote: verbose block to append at end of message
-        if rtype == 'sources_footnote' and ref.get('sources'):
-            lines = ['\n* Sources:']
-            for s in ref.get('sources', []):
-                title = s.get('title') or s.get('attribution') or s.get('url')
-                url = s.get('url')
-                if url:
-                    lines.append(f"\t* [{title}]({url})")
-            # Ensure trailing newline after block
-            lines.append('')
-            return '\n'.join(lines)
         return ''
 
-    # (sources footnote formatting is handled inside build_reference_markdown)
+    # (sources footnote formatting is handled separately)
 
     # Prepare text parts for position-based replacement if references provide indices.
     # Collect indices of text parts and their content.
@@ -462,16 +459,7 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
 
             # Sort refs descending by start_idx to avoid shifting indices when replacing
             indexed_refs.sort(key=lambda r: r.get('start_idx', 0), reverse=True)
-            # Collect sources_footnote blocks to append after all replacements
-            sources_blocks: List[str] = []
             for ref in indexed_refs:
-                # If this is a sources_footnote, collect its block and do not try to
-                # replace at its indices (indices may be equal and matched_text could be a space)
-                if ref.get('type') == 'sources_footnote':
-                    alt = build_reference_markdown(ref)
-                    if alt:
-                        sources_blocks.append(alt)
-                    continue
 
                 # If this is a hidden reference, remove the span without replacement
                 if ref.get('type') == 'hidden':
@@ -491,12 +479,6 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
 
                 # Build replacement text based on type
                 alt = build_reference_markdown(ref)
-                # If this is a sources_footnote, collect its block and do not try to
-                # replace at its indices (indices may be equal and matched_text could be a space)
-                if ref.get('type') == 'sources_footnote':
-                    if alt:
-                        sources_blocks.append(alt)
-                    continue
 
                 start = int(ref.get('start_idx'))
                 end = int(ref.get('end_idx'))
@@ -529,9 +511,68 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
                         if matched is None or _normalize_for_compare(matched) == _normalize_for_compare(span):
                             full_text = full_text[:start] + alt + full_text[end:]
 
-            # After processing indexed refs, append any collected sources footnote blocks
-            if sources_blocks:
-                full_text = full_text + '\n' + '\n'.join(sources_blocks)
+            # After processing indexed refs, collect and append sources from search_result_groups and grouped_webpages
+            sources = []
+            seen_sources = set()
+            def add_source(attribution: Optional[str], url: Optional[str], title: Optional[str], snippet: Optional[str]):
+                if snippet:
+                    snippet = snippet.replace('\n', ' ').replace('\r', ' ')
+                key = None
+                if url:
+                    key = ('url', url.strip(), attribution or '', title or '', snippet or '')
+                else:
+                    key = ('text', (attribution or '').strip(), (title or '').strip(), (snippet or '').strip())
+                if key in seen_sources:
+                    return
+                seen_sources.add(key)
+                sources.append({
+                    'attribution': attribution,
+                    'url': url,
+                    'title': title,
+                    'snippet': snippet
+                })
+
+            if search_result_groups:
+                for group in search_result_groups:
+                    for entry in group.get('entries', []):
+                        add_source(
+                            entry.get('attribution'),
+                            entry.get('url'),
+                            entry.get('title'),
+                            entry.get('snippet')
+                        )
+            for ref in content_references or []:
+                if ref.get('type') == 'grouped_webpages':
+                    for item in ref.get('items', []):
+                        add_source(
+                            item.get('attribution'),
+                            item.get('url'),
+                            item.get('title'),
+                            item.get('snippet')
+                        )
+                        for sw in item.get('supporting_websites', []):
+                            add_source(
+                                sw.get('attribution') or sw.get('title'),
+                                sw.get('url'),
+                                sw.get('title'),
+                                sw.get('snippet')
+                            )
+            if sources:
+                lines = ['\n* Sources:']
+                for s in sources:
+                    attribution = s.get('attribution') or s.get('title') or s.get('url')
+                    url = s.get('url')
+                    title = s.get('title')
+                    snippet = s.get('snippet')
+                    if snippet:
+                        snippet = snippet.replace('\n', ' ').replace('\r', ' ')
+                    if url and attribution:
+                        lines.append(f"\t* [{attribution}]({url})")
+                        if title:
+                            lines.append(f"\t\t**{title}**")
+                        if snippet:
+                            lines.append(f"\t\t{snippet}")
+                full_text += '\n'.join(lines)
             
             # Replace original text parts with the modified full_text — put into first text part
             for idx, part_idx in enumerate(text_part_indexes):
@@ -633,7 +674,7 @@ def convert_conversation_to_markdown(conversation: Dict, assets_map: Dict[str, s
     # Messages
     for msg in messages:
         author = msg['author']
-        content = format_message_parts(msg['parts'], assets_map, msg.get('content_references', []))
+        content = format_message_parts(msg['parts'], assets_map, msg.get('content_references', []), msg.get('search_result_groups', []))
         timestamp = epoch_to_timestamp(msg['create_time']) if msg.get('create_time') else ''
         
         if content.strip():  # Only add non-empty messages
