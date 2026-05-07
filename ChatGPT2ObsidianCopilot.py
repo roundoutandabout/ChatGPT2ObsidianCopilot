@@ -133,6 +133,52 @@ def sanitize_filename(text: str, max_words: int = 10) -> str:
     filename = re.sub(r'\s+', ' ', filename).strip()
     return filename
 
+def collect_thoughts(node_id: str, mapping: Dict) -> str:
+    """
+    Collect thoughts from the parent chain of an assistant message.
+    """
+    thoughts_parts = []
+    current = mapping.get(node_id)
+    while current:
+        message = current.get('message')
+        if message:
+            content = message.get('content', {})
+            if content.get('content_type') == 'thoughts':
+                thoughts = content.get('thoughts', [])
+                for thought in thoughts:
+                    summary = thought.get('summary', '')
+                    content_text = thought.get('content', '')
+                    chunks = thought.get('chunks', [])
+                    text = f"* {summary}"
+                    if content_text:
+                        text += f"\n  {content_text}"
+                    if chunks:
+                        text += '\n' + '\n'.join(f"\t* {chunk}" for chunk in chunks)
+                    thoughts_parts.insert(0, text)
+            elif content.get('content_type') == 'reasoning_recap':
+                recap_content = content.get('content', '')
+                text = f"* {recap_content}\n  Done"
+                thoughts_parts.insert(0, text)
+            # Check for reasoning_title and search_result_groups
+            metadata = message.get('metadata', {})
+            reasoning_title = metadata.get('reasoning_title')
+            search_result_groups = metadata.get('search_result_groups', [])
+            if reasoning_title and search_result_groups:
+                lines = [f"* {reasoning_title}"]
+                for group in search_result_groups:
+                    for entry in group.get('entries', []):
+                        attribution = entry.get('attribution')
+                        url = entry.get('url')
+                        if attribution and url:
+                            lines.append(f"\t* [{attribution}]({url})")
+                thoughts_parts.insert(0, '\n'.join(lines))
+        parent_id = current.get('parent')
+        if parent_id:
+            current = mapping.get(parent_id)
+        else:
+            break
+    return '\n\n'.join(thoughts_parts) if thoughts_parts else ''
+
 def get_conversation_messages(conversation: Dict) -> List[Dict]:
     """
     Extract messages from conversation mapping by traversing from current_node.
@@ -189,14 +235,20 @@ def get_conversation_messages(conversation: Dict) -> List[Dict]:
                 metadata = message.get('metadata', {})
                 content_refs = metadata.get('content_references', [])
                 search_result_groups = metadata.get('search_result_groups', [])
-                messages.append({
+                msg_dict = {
                     'node_id': node_id, # For debugging purposes
                     'author': author,
                     'parts': parts,
                     'create_time': message.get('create_time'),
                     'content_references': content_refs,
                     'search_result_groups': search_result_groups
-                })
+                }
+                # Collect thoughts for assistant messages
+                if author == 'ai':
+                    thoughts = collect_thoughts(node_id, mapping)
+                    if thoughts:
+                        msg_dict['thoughts'] = thoughts
+                messages.append(msg_dict)
 
     # Sort by create_time (oldest first). Put messages without timestamps at the end.
     def _sort_key(m):
@@ -675,6 +727,9 @@ def convert_conversation_to_markdown(conversation: Dict, assets_map: Dict[str, s
     for msg in messages:
         author = msg['author']
         content = format_message_parts(msg['parts'], assets_map, msg.get('content_references', []), msg.get('search_result_groups', []))
+        thoughts = msg.get('thoughts')
+        if thoughts:
+            content = f"<think>\n{thoughts}\n</think>\n\n{content}"
         timestamp = epoch_to_timestamp(msg['create_time']) if msg.get('create_time') else ''
         
         if content.strip():  # Only add non-empty messages
