@@ -146,9 +146,9 @@ def collect_thoughts(node_id: str, mapping: Dict) -> str:
             if content.get('content_type') == 'thoughts':
                 thoughts = content.get('thoughts', [])
                 for thought in thoughts:
-                    summary = thought.get('summary', '')
-                    content_text = thought.get('content', '')
-                    chunks = thought.get('chunks', [])
+                    summary = html.unescape(thought.get('summary', ''))
+                    content_text = html.unescape(thought.get('content', ''))
+                    chunks = [html.unescape(chunk) for chunk in thought.get('chunks', [])]
                     text = f"* {summary}"
                     if content_text:
                         text += f"\n  {content_text}"
@@ -156,7 +156,7 @@ def collect_thoughts(node_id: str, mapping: Dict) -> str:
                         text += '\n' + '\n'.join(f"\t* {chunk}" for chunk in chunks)
                     thoughts_parts.insert(0, text)
             elif content.get('content_type') == 'reasoning_recap':
-                recap_content = content.get('content', '')
+                recap_content = html.unescape(content.get('content', ''))
                 text = f"* {recap_content}\n  Done"
                 thoughts_parts.insert(0, text)
             # Check for reasoning_title and search_result_groups
@@ -164,12 +164,15 @@ def collect_thoughts(node_id: str, mapping: Dict) -> str:
             reasoning_title = metadata.get('reasoning_title')
             search_result_groups = metadata.get('search_result_groups', [])
             if reasoning_title and search_result_groups:
+                reasoning_title = html.unescape(reasoning_title)
                 lines = [f"* {reasoning_title}"]
                 for group in search_result_groups:
                     for entry in group.get('entries', []):
                         attribution = entry.get('attribution')
                         url = entry.get('url')
                         if attribution and url:
+                            attribution = html.unescape(attribution)
+                            url = html.unescape(url)
                             lines.append(f"\t* [{attribution}]({url})")
                 thoughts_parts.insert(0, '\n'.join(lines))
         parent_id = current.get('parent')
@@ -270,7 +273,7 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
     # Helper to build display text from a content_reference
     def build_reference_markdown(ref: Dict) -> str:
         rtype = ref.get('type')
-        # grouped_webpages (and model-predicted fallback): build markdown links from items list
+        # grouped_webpages: build markdown links from items list
         if rtype in ('grouped_webpages', 'grouped_webpages_model_predicted_fallback') and ref.get('items'):
             links = []
             for it in ref.get('items', []):
@@ -303,7 +306,7 @@ def format_message_parts(parts: List[Dict], assets_map: Dict[str, str],
                             links.append(sw_link)
             
             if links:
-                return f"({' '.join(links)})"
+                return '\n' + '\n'.join(f"\t* {link}" for link in links)
         # image_group: format images and links as a markdown table (images row, links row)
         if rtype == 'image_group' and ref.get('images'):
             img_cells = []
