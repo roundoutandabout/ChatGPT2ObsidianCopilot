@@ -142,6 +142,9 @@ def collect_thoughts(node_id: str, mapping: Dict) -> str:
     while current:
         message = current.get('message')
         if message:
+            author_role = message.get('author', {}).get('role')
+            if author_role == 'user':
+                break
             content = message.get('content', {})
             if content.get('content_type') == 'thoughts':
                 thoughts = content.get('thoughts', [])
