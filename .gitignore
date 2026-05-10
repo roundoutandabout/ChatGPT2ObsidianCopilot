@@ -2,3 +2,4 @@ chatgpt-data*/**
 chatgpt-export*/**
 .vscode
 __pycache__
+Limitations, ToDo.md
